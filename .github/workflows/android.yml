@@ -36,8 +36,13 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Bubblewrap
-        run: npm install -g @bubblewrap/cli@latest
+      - name: Install + configure Bubblewrap (non-interactive)
+        run: |
+          npm install -g @bubblewrap/cli@latest
+          # Point Bubblewrap at the runner's JDK + Android SDK so `build` never
+          # prompts "Do you want Bubblewrap to install the JDK?" (which hangs CI).
+          mkdir -p "$HOME/.bubblewrap"
+          printf '{ "jdkPath": "%s", "androidSdkPath": "%s" }\n' "$JAVA_HOME" "${ANDROID_HOME:-$ANDROID_SDK_ROOT}" > "$HOME/.bubblewrap/config.json"
 
       - name: Restore signing keystore
         run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android.keystore
