@@ -8,10 +8,11 @@
 // fallbacks don't trigger for them.
 import fs from "node:fs";
 import http from "node:http";
+import { execFileSync } from "node:child_process";
 import bubblewrap from "@bubblewrap/core";
 import Jimp from "jimp";
 
-const { TwaManifest, TwaGenerator, Config, JdkHelper, AndroidSdkTools, GradleWrapper, ConsoleLog } = bubblewrap;
+const { TwaManifest, TwaGenerator, ConsoleLog } = bubblewrap;
 const cwd = process.cwd();
 const log = new ConsoleLog("xeven");
 
@@ -68,15 +69,20 @@ if (twaManifest.webManifestUrl && !(await ok(twaManifest.webManifestUrl, "json")
 // 1) Generate the Android project from the manifest (no prompts).
 await new TwaGenerator().createTwaProject(cwd, twaManifest, log);
 
-// 2) Build with Gradle. Signing config in the generated build.gradle reads the
-//    keystore path from the manifest + passwords from BUBBLEWRAP_*_PASSWORD env.
-const config = new Config(process.env.JAVA_HOME, process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT);
-const jdkHelper = new JdkHelper(process, config);
-const androidSdkTools = await AndroidSdkTools.create(process, config, jdkHelper, log);
-const gradle = new GradleWrapper(process, androidSdkTools, cwd);
-
-await gradle.assembleRelease();
-await gradle.bundleRelease();
+// 2) Build with Gradle directly (not @bubblewrap/core's GradleWrapper, which can
+//    hang on the daemon/rich-console in CI). --no-daemon + --console=plain keep it
+//    non-interactive with streaming logs; both tasks in one invocation share config.
+//    Signing config in the generated build.gradle reads the keystore path from the
+//    manifest + passwords from BUBBLEWRAP_*_PASSWORD env.
+const sdkDir = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || "";
+fs.writeFileSync("local.properties", `sdk.dir=${sdkDir}\n`);
+try { fs.chmodSync("gradlew", 0o755); } catch { /* ignore */ }
+console.log("Running Gradle assembleRelease + bundleRelease…");
+execFileSync("./gradlew", ["assembleRelease", "bundleRelease", "--no-daemon", "--console=plain", "--stacktrace"], {
+  cwd,
+  stdio: "inherit",
+  env: { ...process.env, ANDROID_HOME: sdkDir, ANDROID_SDK_ROOT: sdkDir, GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g" },
+});
 
 // 3) Copy artifacts to predictable names at the repo root for the release step.
 const apkCandidates = [
