@@ -82,8 +82,8 @@ jobs:
         #    can't read a plain pipe (aborts 130), but a PTY works.
         run: |
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          npm install @bubblewrap/core@latest
-          node build.mjs
+          npm install @bubblewrap/core@latest jimp@0.22
+          node build.mjs || (echo "===== app/build.gradle (30-60) ====="; sed -n '30,60p' app/build.gradle; exit 1)
           ls -la app-release-signed.apk app-release-bundle.aab
 
       - name: Publish release with the artifacts
