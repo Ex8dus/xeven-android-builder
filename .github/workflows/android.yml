@@ -68,6 +68,13 @@ jobs:
             "appVersionCode": ${{ github.event.inputs.version_code }},
             "signingKey": { "path": "$GITHUB_WORKSPACE/android.keystore", "alias": "xeven" },
             "enableNotifications": true,
+            "splashScreenFadeOutDuration": 300,
+            "orientation": "default",
+            "enableSiteSettingsShortcut": true,
+            "isChromeOSOnly": false,
+            "isMetaQuest": false,
+            "shortcuts": [],
+            "features": {},
             "fallbackType": "customtabs"
           }
           JSON
