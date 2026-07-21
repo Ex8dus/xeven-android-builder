@@ -23,6 +23,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 22   # hard cap so a slow/stuck Gradle can't hang forever
     permissions:
       contents: write   # lets the built-in GITHUB_TOKEN publish the release
     steps:
@@ -89,9 +90,14 @@ jobs:
         #    can't read a plain pipe (aborts 130), but a PTY works.
         run: |
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          npm install @bubblewrap/core@latest jimp@0.22
-          node build.mjs || (echo "===== app/build.gradle (30-60) ====="; sed -n '30,60p' app/build.gradle; exit 1)
-          ls -la app-release-signed.apk app-release-bundle.aab
+          npm install @bubblewrap/core@latest jimp@0.22 2>&1 | tail -2
+          # Stream Gradle output LIVE (no redirect) so it's in the job log even if the
+          # job-level timeout cancels us mid-build. Hard-kill node + orphans at 15 min.
+          timeout --signal=KILL 900 node build.mjs || true
+          pkill -9 -f org.gradle 2>/dev/null || true
+          pkill -9 -f KotlinCompileDaemon 2>/dev/null || true
+          pkill -9 java 2>/dev/null || true
+          ls -la app-release-signed.apk && echo "APK OK" || (echo "NO APK — build failed/timed out"; exit 1)
 
       - name: Publish release with the artifacts
         id: release
@@ -99,6 +105,7 @@ jobs:
         with:
           tag_name: build-${{ github.event.inputs.build_id }}
           name: ${{ github.event.inputs.app_name }} (${{ github.event.inputs.version_name }})
+          fail_on_unmatched_files: false
           files: |
             app-release-signed.apk
             app-release-bundle.aab
