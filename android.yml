@@ -1,0 +1,102 @@
+# Xeven Android builder — compiles a PUBLISHED Xeven PWA into an installable
+# Android app (TWA) using Bubblewrap, for FREE on GitHub Actions. Triggered by the
+# mobile-build Edge Function via workflow_dispatch; posts the APK/AAB back to Xeven.
+#
+# One-time setup (see README.md). Only THREE repo secrets are needed:
+#   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, MOBILE_CALLBACK_SECRET
+# (the signing alias is fixed to "xeven"; the release uses the built-in GITHUB_TOKEN).
+name: Build Android app
+
+on:
+  workflow_dispatch:
+    inputs:
+      pwa_url:      { description: "Published PWA URL (/s/<token>/)", required: true }
+      app_name:     { description: "App display name", required: true }
+      package_id:   { description: "Android package id (com.xeven.x)", required: true }
+      version_name: { description: "Version name (1.0.0)", required: true }
+      version_code: { description: "Version code (int)", required: true }
+      theme_color:  { description: "Theme color (#RRGGBB)", required: true }
+      build_id:     { description: "Correlation id for the callback", required: true }
+      project_id:   { description: "Xeven project id", required: true }
+      callback_url: { description: "Xeven callback endpoint", required: true }
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write   # lets the built-in GITHUB_TOKEN publish the release
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with: { distribution: temurin, java-version: "17" }
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Bubblewrap
+        run: npm install -g @bubblewrap/cli@latest
+
+      - name: Restore signing keystore
+        run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android.keystore
+
+      - name: Write TWA manifest
+        run: |
+          MANIFEST_URL="${{ github.event.inputs.pwa_url }}"
+          MANIFEST_URL="${MANIFEST_URL%/}/manifest.webmanifest"
+          cat > twa-manifest.json <<JSON
+          {
+            "packageId": "${{ github.event.inputs.package_id }}",
+            "host": "$(echo '${{ github.event.inputs.pwa_url }}' | awk -F/ '{print $3}')",
+            "name": "${{ github.event.inputs.app_name }}",
+            "launcherName": "${{ github.event.inputs.app_name }}",
+            "display": "standalone",
+            "themeColor": "${{ github.event.inputs.theme_color }}",
+            "navigationColor": "${{ github.event.inputs.theme_color }}",
+            "backgroundColor": "#ffffff",
+            "startUrl": "${{ github.event.inputs.pwa_url }}",
+            "webManifestUrl": "$MANIFEST_URL",
+            "iconUrl": "${{ github.event.inputs.pwa_url }}icon-512.png",
+            "appVersionName": "${{ github.event.inputs.version_name }}",
+            "appVersionCode": ${{ github.event.inputs.version_code }},
+            "signingKey": { "path": "android.keystore", "alias": "xeven" },
+            "enableNotifications": true,
+            "fallbackType": "customtabs"
+          }
+          JSON
+
+      - name: Build APK + AAB
+        env:
+          BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: bubblewrap build --skipPwaValidation
+
+      - name: Publish release with the artifacts
+        id: release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: build-${{ github.event.inputs.build_id }}
+          name: ${{ github.event.inputs.app_name }} (${{ github.event.inputs.version_name }})
+          files: |
+            app-release-signed.apk
+            app-release-bundle.aab
+
+      - name: Notify Xeven (success)
+        if: success()
+        run: |
+          REPO="${{ github.repository }}"
+          BASE="https://github.com/$REPO/releases/download/build-${{ github.event.inputs.build_id }}"
+          curl -sS -X POST "${{ github.event.inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -H "x-build-secret: ${{ secrets.MOBILE_CALLBACK_SECRET }}" \
+            -d "{\"action\":\"callback\",\"buildId\":\"${{ github.event.inputs.build_id }}\",\"status\":\"ready\",\"apkUrl\":\"$BASE/app-release-signed.apk\",\"aabUrl\":\"$BASE/app-release-bundle.aab\"}"
+
+      - name: Notify Xeven (failure)
+        if: failure()
+        run: |
+          curl -sS -X POST "${{ github.event.inputs.callback_url }}" \
+            -H "Content-Type: application/json" \
+            -H "x-build-secret: ${{ secrets.MOBILE_CALLBACK_SECRET }}" \
+            -d "{\"action\":\"callback\",\"buildId\":\"${{ github.event.inputs.build_id }}\",\"status\":\"failed\",\"error\":\"La compilación falló en GitHub Actions.\"}"
