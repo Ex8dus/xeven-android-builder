@@ -78,11 +78,21 @@ const sdkDir = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT || "";
 fs.writeFileSync("local.properties", `sdk.dir=${sdkDir}\n`);
 try { fs.chmodSync("gradlew", 0o755); } catch { /* ignore */ }
 console.log("Running Gradle assembleRelease + bundleRelease…");
-execFileSync("./gradlew", ["assembleRelease", "bundleRelease", "--no-daemon", "--console=plain", "--stacktrace"], {
-  cwd,
-  stdio: "inherit",
-  env: { ...process.env, ANDROID_HOME: sdkDir, ANDROID_SDK_ROOT: sdkDir, GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g" },
-});
+try {
+  execFileSync(
+    "./gradlew",
+    ["assembleRelease", "bundleRelease", "--no-daemon", "--console=plain", "--stacktrace", "--info"],
+    {
+      cwd,
+      stdio: "inherit",
+      timeout: 720000, // 12 min hard cap → fail fast (with streamed logs) instead of hanging
+      env: { ...process.env, ANDROID_HOME: sdkDir, ANDROID_SDK_ROOT: sdkDir, GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx5g" },
+    },
+  );
+} catch (e) {
+  console.log("GRADLE FAILED/TIMED OUT: " + (e && e.message));
+  throw e;
+}
 
 // 3) Copy artifacts to predictable names at the repo root for the release step.
 const apkCandidates = [
