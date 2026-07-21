@@ -76,7 +76,10 @@ jobs:
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-        run: bubblewrap build --skipPwaValidation
+        # `yes |` auto-answers Bubblewrap's interactive prompts (e.g. "regenerate
+        # your project? (Y/n)") since CI has no TTY. Regenerating builds the Android
+        # project from our twa-manifest.json.
+        run: yes | bubblewrap build --skipPwaValidation
 
       - name: Publish release with the artifacts
         id: release
