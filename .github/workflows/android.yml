@@ -76,12 +76,12 @@ jobs:
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-        # CI has no TTY, so feed Bubblewrap's prompts explicit answers in order:
-        #   "regenerate your project? (Y/n)"      -> y
-        #   "versionName for the new App version" -> our real version (not "y")
-        # Trailing blank lines accept defaults for any follow-up (e.g. versionCode).
+        # DIAGNOSTIC: discover the real non-interactive flags for this bubblewrap version.
         run: |
-          printf 'y\n%s\n\n\n' "${{ github.event.inputs.version_name }}" | bubblewrap build --skipPwaValidation
+          bubblewrap --version || true
+          echo "===== build --help ====="; bubblewrap build --help || true
+          echo "===== update --help ====="; bubblewrap update --help || true
+          echo "===== init --help ====="; bubblewrap init --help || true
 
       - name: Publish release with the artifacts
         id: release
