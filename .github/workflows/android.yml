@@ -66,7 +66,7 @@ jobs:
             "iconUrl": "${{ github.event.inputs.pwa_url }}icon-512.png",
             "appVersionName": "${{ github.event.inputs.version_name }}",
             "appVersionCode": ${{ github.event.inputs.version_code }},
-            "signingKey": { "path": "android.keystore", "alias": "xeven" },
+            "signingKey": { "path": "$GITHUB_WORKSPACE/android.keystore", "alias": "xeven" },
             "enableNotifications": true,
             "fallbackType": "customtabs"
           }
@@ -82,11 +82,9 @@ jobs:
         #    can't read a plain pipe (aborts 130), but a PTY works.
         run: |
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          # Feed the PTY: "y" (regenerate), then the real versionName, then Enter for
-          # any follow-up (versionCode auto-increments).
-          printf 'y\n%s\n\n' "${{ github.event.inputs.version_name }}" | script -qec "bubblewrap build --skipPwaValidation" /dev/null
-          ls -la app-release-signed.apk app-release-bundle.aab 2>/dev/null || \
-            (echo "artifacts missing, listing outputs:" && find . -name '*.apk' -o -name '*.aab' 2>/dev/null | head -20)
+          npm install @bubblewrap/core@latest
+          node build.mjs
+          ls -la app-release-signed.apk app-release-bundle.aab
 
       - name: Publish release with the artifacts
         id: release
