@@ -76,10 +76,11 @@ jobs:
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-        # `yes |` auto-answers Bubblewrap's interactive prompts (e.g. "regenerate
-        # your project? (Y/n)") since CI has no TTY. Regenerating builds the Android
-        # project from our twa-manifest.json.
-        run: yes | bubblewrap build --skipPwaValidation
+        # --skipVersionUpgrade removes the free-text version prompt (otherwise `yes`
+        # fills it with "y"); `yes |` then only answers the "regenerate project? (Y/n)"
+        # prompt, since CI has no TTY. Regenerating builds the Android project from
+        # our twa-manifest.json.
+        run: yes | bubblewrap build --skipPwaValidation --skipVersionUpgrade
 
       - name: Publish release with the artifacts
         id: release
