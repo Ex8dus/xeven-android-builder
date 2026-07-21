@@ -76,12 +76,15 @@ jobs:
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-        # DIAGNOSTIC: discover the real non-interactive flags for this bubblewrap version.
+        # 1) Pre-accept all Android SDK licenses (otherwise bubblewrap hangs asking).
+        # 2) Run bubblewrap inside a pseudo-TTY (`script`) feeding answers: "y" to
+        #    "regenerate project?" then Enter to accept the default version — inquirer
+        #    can't read a plain pipe (aborts 130), but a PTY works.
         run: |
-          bubblewrap --version || true
-          echo "===== build --help ====="; bubblewrap build --help || true
-          echo "===== update --help ====="; bubblewrap update --help || true
-          echo "===== init --help ====="; bubblewrap init --help || true
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          printf 'y\n\n\n' | script -qec "bubblewrap build --skipPwaValidation" /dev/null
+          ls -la app-release-signed.apk app-release-bundle.aab 2>/dev/null || \
+            (echo "artifacts missing, listing outputs:" && find . -name '*.apk' -o -name '*.aab' | head -20)
 
       - name: Publish release with the artifacts
         id: release
