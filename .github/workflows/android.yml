@@ -82,9 +82,11 @@ jobs:
         #    can't read a plain pipe (aborts 130), but a PTY works.
         run: |
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
-          printf 'y\n\n\n' | script -qec "bubblewrap build --skipPwaValidation" /dev/null
+          # Feed the PTY: "y" (regenerate), then the real versionName, then Enter for
+          # any follow-up (versionCode auto-increments).
+          printf 'y\n%s\n\n' "${{ github.event.inputs.version_name }}" | script -qec "bubblewrap build --skipPwaValidation" /dev/null
           ls -la app-release-signed.apk app-release-bundle.aab 2>/dev/null || \
-            (echo "artifacts missing, listing outputs:" && find . -name '*.apk' -o -name '*.aab' | head -20)
+            (echo "artifacts missing, listing outputs:" && find . -name '*.apk' -o -name '*.aab' 2>/dev/null | head -20)
 
       - name: Publish release with the artifacts
         id: release
