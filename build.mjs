@@ -22,7 +22,7 @@ const FALLBACK_PNG = Buffer.from(
 
 // Tiny localhost server that hands out the fallback PNG when needed.
 const server = http.createServer((_req, res) => {
-  res.writeHead(200, { "Content-Type": "image/png" });
+  res.writeHead(200, { "Content-Type": "image/png", "Content-Length": FALLBACK_PNG.length });
   res.end(FALLBACK_PNG);
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
