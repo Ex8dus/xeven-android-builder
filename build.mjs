@@ -2,9 +2,10 @@
 // (regenerate/version/JDK), which don't work in CI. Reads twa-manifest.json,
 // generates the Android project, and builds a signed APK + AAB with Gradle.
 //
-// Robustness: if the app's icon URL isn't a real image (missing/misconfigured),
-// we fall back to a bundled placeholder served from a tiny localhost server, so a
-// bad icon never fails the whole build.
+// Robustness: if the app's icon or web manifest URL isn't reachable/valid, we fall
+// back to minimal placeholders served from a tiny localhost server, so a missing
+// PWA asset never fails the whole build. Real published apps ship both, so the
+// fallbacks don't trigger for them.
 import fs from "node:fs";
 import http from "node:http";
 import bubblewrap from "@bubblewrap/core";
@@ -14,31 +15,54 @@ const { TwaManifest, TwaGenerator, Config, JdkHelper, AndroidSdkTools, GradleWra
 const cwd = process.cwd();
 const log = new ConsoleLog("xeven");
 
-// A 512×512 solid-brand PNG used only when the real icon can't be fetched. Built
-// with Jimp (bubblewrap's own image lib) so pngjs is guaranteed to parse it.
-const FALLBACK_PNG = await new Jimp(512, 512, 0x7c6cffff).getBufferAsync(Jimp.MIME_PNG);
+const twaManifest = await TwaManifest.fromFile("twa-manifest.json");
 
-// Tiny localhost server that hands out the fallback PNG when needed.
-const server = http.createServer((_req, res) => {
-  res.writeHead(200, { "Content-Type": "image/png", "Content-Length": FALLBACK_PNG.length });
-  res.end(FALLBACK_PNG);
+// Built with Jimp (bubblewrap's own image lib) so its pngjs always parses it.
+const FALLBACK_PNG = await new Jimp(512, 512, 0x7c6cffff).getBufferAsync(Jimp.MIME_PNG);
+const FALLBACK_MANIFEST = JSON.stringify({
+  name: twaManifest.name || "App",
+  short_name: (twaManifest.name || "App").slice(0, 12),
+  start_url: twaManifest.startUrl || "/",
+  scope: "/",
+  display: "standalone",
+  theme_color: twaManifest.themeColor || "#7c6cff",
+  background_color: "#ffffff",
+  icons: [{ src: "icon.png", sizes: "512x512", type: "image/png", purpose: "any maskable" }],
+});
+
+// Serves a fallback manifest (JSON) or icon (PNG) depending on the path.
+const server = http.createServer((req, res) => {
+  if ((req.url || "").includes("manifest")) {
+    const body = Buffer.from(FALLBACK_MANIFEST);
+    res.writeHead(200, { "Content-Type": "application/manifest+json", "Content-Length": body.length });
+    res.end(body);
+  } else {
+    res.writeHead(200, { "Content-Type": "image/png", "Content-Length": FALLBACK_PNG.length });
+    res.end(FALLBACK_PNG);
+  }
 });
 await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-const fallbackUrl = `http://127.0.0.1:${server.address().port}/icon.png`;
+const origin = `http://127.0.0.1:${server.address().port}`;
 
-async function isRealImage(url) {
+async function ok(url, kind) {
   try {
     const r = await fetch(url, { method: "GET" });
-    return r.ok && (r.headers.get("content-type") || "").toLowerCase().startsWith("image/");
-  } catch {
-    return false;
-  }
+    if (!r.ok) return false;
+    const ct = (r.headers.get("content-type") || "").toLowerCase();
+    if (kind === "image") return ct.startsWith("image/");
+    const txt = await r.text();
+    JSON.parse(txt); // manifest must be valid JSON
+    return true;
+  } catch { return false; }
 }
 
-const twaManifest = await TwaManifest.fromFile("twa-manifest.json");
-if (!(await isRealImage(twaManifest.iconUrl))) {
-  console.log(`icon "${twaManifest.iconUrl}" not a valid image → using fallback`);
-  twaManifest.iconUrl = fallbackUrl;
+if (!(await ok(twaManifest.iconUrl, "image"))) {
+  console.log(`icon "${twaManifest.iconUrl}" invalid → fallback`);
+  twaManifest.iconUrl = `${origin}/icon.png`;
+}
+if (twaManifest.webManifestUrl && !(await ok(twaManifest.webManifestUrl, "json"))) {
+  console.log(`web manifest "${twaManifest.webManifestUrl}" invalid → fallback`);
+  twaManifest.webManifestUrl = new URL(`${origin}/manifest.webmanifest`);
 }
 
 // 1) Generate the Android project from the manifest (no prompts).
