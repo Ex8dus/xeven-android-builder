@@ -90,16 +90,47 @@ execFileSync(
   },
 );
 
-// 3) Copy artifacts to predictable names at the repo root for the release step.
-const apkCandidates = [
-  "app/build/outputs/apk/release/app-release.apk",
-  "app/build/outputs/apk/release/app-release-signed.apk",
-  "app/build/outputs/apk/release/app-release-unsigned.apk",
-];
-const apk = apkCandidates.find((p) => fs.existsSync(p));
+// 3) SIGN the artifacts. Gradle alone produces an UNSIGNED apk here (the Bubblewrap
+//    CLI normally signs afterwards), and Android refuses to install unsigned APKs
+//    ("App not installed"). So we zipalign + apksigner ourselves, then verify.
+function findBuildTool(name) {
+  const base = `${sdkDir}/build-tools`;
+  const versions = fs.readdirSync(base).sort().reverse();
+  for (const v of versions) {
+    const p = `${base}/${v}/${name}`;
+    if (fs.existsSync(p)) return p;
+  }
+  throw new Error(`${name} not found under ${base}`);
+}
+
+const keystore = `${cwd}/android.keystore`;
+const storePass = process.env.BUBBLEWRAP_KEYSTORE_PASSWORD || "";
+const keyPass = process.env.BUBBLEWRAP_KEY_PASSWORD || storePass;
+const alias = "xeven";
+
+const apkIn = ["app/build/outputs/apk/release/app-release-unsigned.apk",
+               "app/build/outputs/apk/release/app-release.apk"].find((p) => fs.existsSync(p));
+if (!apkIn) throw new Error("Gradle produced no APK under app/build/outputs/apk/release/");
+
+console.log("Signing APK…");
+execFileSync(findBuildTool("zipalign"), ["-p", "-f", "4", apkIn, "app-release-aligned.apk"], { cwd, stdio: "inherit" });
+execFileSync(findBuildTool("apksigner"), [
+  "sign", "--ks", keystore, "--ks-pass", `pass:${storePass}`,
+  "--ks-key-alias", alias, "--key-pass", `pass:${keyPass}`,
+  "--out", "app-release-signed.apk", "app-release-aligned.apk",
+], { cwd, stdio: "inherit" });
+// Hard gate: never publish an APK that isn't really signed.
+execFileSync(findBuildTool("apksigner"), ["verify", "--print-certs", "app-release-signed.apk"], { cwd, stdio: "inherit" });
+
+// The AAB for Play Store is signed with jarsigner (JAR-style signing).
 const aab = "app/build/outputs/bundle/release/app-release.aab";
-if (!apk) throw new Error("No APK produced at " + apkCandidates.join(", "));
-fs.copyFileSync(apk, "app-release-signed.apk");
-if (fs.existsSync(aab)) fs.copyFileSync(aab, "app-release-bundle.aab");
-console.log("BUILD OK -> apk:" + apk + " aab:" + (fs.existsSync(aab) ? aab : "none"));
+if (fs.existsSync(aab)) {
+  console.log("Signing AAB…");
+  execFileSync(`${process.env.JAVA_HOME}/bin/jarsigner`, [
+    "-keystore", keystore, "-storepass", storePass, "-keypass", keyPass,
+    "-signedjar", "app-release-bundle.aab", aab, alias,
+  ], { cwd, stdio: "inherit" });
+}
+
+console.log("BUILD OK -> signed apk + " + (fs.existsSync("app-release-bundle.aab") ? "signed aab" : "no aab"));
 server.close();
