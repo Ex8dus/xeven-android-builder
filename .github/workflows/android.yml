@@ -101,13 +101,41 @@ jobs:
           pkill -9 java 2>/dev/null || true
           ls -la app-release-signed.apk && echo "APK OK" || (echo "NO APK — build failed/timed out"; exit 1)
 
+      # QUE EL APK DIGA QUÉ PERMISOS LLEVA, en vez de deducirlo.
+      #
+      # En un TWA la web corre dentro de Chrome, así que los permisos que valen
+      # son los de Chrome y no los del contenedor. El único que sí tiene que
+      # estar declarado aquí es el de notificaciones (Android 13+), y lo pone
+      # Bubblewrap solo porque `enableNotifications` está en true.
+      #
+      # Eso es razonamiento, no evidencia. Esto lo imprime en el registro de la
+      # compilación: si algún día Bubblewrap cambia, o alguien apaga las
+      # notificaciones sin darse cuenta, se ve aquí y no en el rechazo de la
+      # tienda tres semanas después. No falla la compilación — sólo deja dicho
+      # lo que hay.
       - name: Qué permisos pide el APK
         continue-on-error: true
+        # TRES FORMAS DE MIRARLO, de la mejor a la más burda, y gana la primera
+        # que exista. La versión anterior sólo buscaba `aapt`, y las herramientas
+        # de Android 35 ya no lo traen: se habría rendido con un «no se pudo
+        # mirar» en cada compilación. Un paso que existe para dar evidencia y no
+        # la da es peor que no tenerlo, porque parece que comprobó algo.
         run: |
+          APK=app-release-signed.apk
           AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt 2>/dev/null | tail -1)
-          if [ -z "$AAPT" ]; then echo "(sin aapt en esta imagen; no se pudo mirar)"; exit 0; fi
+          AAPT2=$(ls "$ANDROID_HOME"/build-tools/*/aapt2 2>/dev/null | tail -1)
           echo "--- permisos declarados en el APK ---"
-          "$AAPT" dump permissions app-release-signed.apk | grep -i "permission" || echo "(ninguno)"
+          if [ -n "$AAPT" ]; then
+            "$AAPT" dump permissions "$APK" | grep -i "uses-permission" || echo "(ninguno)"
+          elif [ -n "$AAPT2" ]; then
+            "$AAPT2" dump permissions "$APK" | grep -i "permission" || echo "(ninguno)"
+          elif command -v strings >/dev/null 2>&1; then
+            # El manifiesto va compilado en binario, pero los nombres de los
+            # permisos siguen dentro como texto UTF-16.
+            unzip -p "$APK" AndroidManifest.xml | strings -el | grep -i "android.permission" | sort -u || echo "(ninguno)"
+          else
+            echo "(no hay con qué mirarlo en esta imagen)"
+          fi
           echo "-------------------------------------"
 
       - name: Publish release with the artifacts
