@@ -101,6 +101,15 @@ jobs:
           pkill -9 java 2>/dev/null || true
           ls -la app-release-signed.apk && echo "APK OK" || (echo "NO APK — build failed/timed out"; exit 1)
 
+      - name: Qué permisos pide el APK
+        continue-on-error: true
+        run: |
+          AAPT=$(ls "$ANDROID_HOME"/build-tools/*/aapt 2>/dev/null | tail -1)
+          if [ -z "$AAPT" ]; then echo "(sin aapt en esta imagen; no se pudo mirar)"; exit 0; fi
+          echo "--- permisos declarados en el APK ---"
+          "$AAPT" dump permissions app-release-signed.apk | grep -i "permission" || echo "(ninguno)"
+          echo "-------------------------------------"
+
       - name: Publish release with the artifacts
         id: release
         uses: softprops/action-gh-release@v2
