@@ -148,6 +148,20 @@ jobs:
           files: |
             app-release-signed.apk
             app-release-bundle.aab
+            
+      - name: Huella de la llave de firma
+        id: huella
+        continue-on-error: true
+        run: |
+          SHA=$(keytool -list -v -keystore android.keystore -alias xeven \
+                  -storepass "${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" 2>/dev/null \
+                | grep -i "SHA256:" | head -1 | sed 's/.*SHA256:[[:space:]]*//' | tr -d '[:space:]')
+          if echo "$SHA" | grep -Eq '^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){31}$'; then
+            echo "sha=$(echo "$SHA" | tr 'a-f' 'A-F')" >> "$GITHUB_OUTPUT"
+            echo "Huella de esta compilación: $SHA"
+          else
+            echo "(no se pudo leer la huella; la app se entrega igual, sólo abrirá con la barra del navegador)"
+          fi
 
       - name: Notify Xeven (success)
         if: success()
@@ -157,7 +171,7 @@ jobs:
           curl -sS -X POST "${{ github.event.inputs.callback_url }}" \
             -H "Content-Type: application/json" \
             -H "x-build-secret: ${{ secrets.MOBILE_CALLBACK_SECRET }}" \
-            -d "{\"action\":\"callback\",\"buildId\":\"${{ github.event.inputs.build_id }}\",\"status\":\"ready\",\"apkUrl\":\"$BASE/app-release-signed.apk\",\"aabUrl\":\"$BASE/app-release-bundle.aab\"}"
+            -d "{\"action\":\"callback\",\"buildId\":\"${{ github.event.inputs.build_id }}\",\"status\":\"ready\",\"apkUrl\":\"$BASE/app-release-signed.apk\",\"aabUrl\":\"$BASE/app-release-bundle.aab\",\"buildSha256\":\"${{ steps.huella.outputs.sha }}\"}"
 
       - name: Notify Xeven (failure)
         if: failure()
