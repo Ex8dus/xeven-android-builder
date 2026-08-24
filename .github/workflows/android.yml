@@ -50,23 +50,29 @@ jobs:
       - name: Restore signing keystore
         run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android.keystore
 
-      - name: Write TWA manifest
+            - name: Write TWA manifest
         run: |
-          MANIFEST_URL="${{ github.event.inputs.pwa_url }}"
-          MANIFEST_URL="${MANIFEST_URL%/}/manifest.webmanifest"
+          PWA_URL="${{ github.event.inputs.pwa_url }}"
+          MANIFEST_URL="${PWA_URL%/}/manifest.webmanifest"
+
+          HOST=$(echo "$PWA_URL" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')
+          START_PATH=$(echo "$PWA_URL" | sed -E 's#^[a-zA-Z]+://[^/]+##')
+          [ -n "$START_PATH" ] || START_PATH="/"
+          echo "host=$HOST  startUrl=$START_PATH  (de $PWA_URL)"
+
           cat > twa-manifest.json <<JSON
           {
             "packageId": "${{ github.event.inputs.package_id }}",
-            "host": "$(echo '${{ github.event.inputs.pwa_url }}' | awk -F/ '{print $3}')",
+            "host": "$HOST",
             "name": "${{ github.event.inputs.app_name }}",
             "launcherName": "${{ github.event.inputs.app_name }}",
             "display": "standalone",
             "themeColor": "${{ github.event.inputs.theme_color }}",
             "navigationColor": "${{ github.event.inputs.theme_color }}",
             "backgroundColor": "#ffffff",
-            "startUrl": "${{ github.event.inputs.pwa_url }}",
+            "startUrl": "$START_PATH",
             "webManifestUrl": "$MANIFEST_URL",
-            "iconUrl": "${{ github.event.inputs.pwa_url }}icon-512.png",
+            "iconUrl": "${PWA_URL%/}/icon-512.png",
             "appVersionName": "${{ github.event.inputs.version_name }}",
             "appVersionCode": ${{ github.event.inputs.version_code }},
             "signingKey": { "path": "$GITHUB_WORKSPACE/android.keystore", "alias": "xeven" },
@@ -81,6 +87,17 @@ jobs:
             "fallbackType": "customtabs"
           }
           JSON
+
+          ICON_URL="${PWA_URL%/}/icon-512.png"
+          echo "--- icono de la app ---"
+          CT=$(curl -sS -o /tmp/icono.png -w '%{content_type} %{http_code} %{size_download}' -L "$ICON_URL" || echo "sin respuesta")
+          echo "$ICON_URL -> $CT"
+          case "$CT" in
+            image/*) echo "OK: se usará este icono." ;;
+            *) echo "AVISO: no es una imagen accesible. La app saldrá con el icono de reserva." ;;
+          esac
+          echo "-----------------------"
+
 
       - name: Build APK + AAB
         env:
