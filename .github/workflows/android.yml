@@ -50,7 +50,7 @@ jobs:
       - name: Restore signing keystore
         run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android.keystore
 
-            - name: Write TWA manifest
+      - name: Write TWA manifest
         run: |
           PWA_URL="${{ github.event.inputs.pwa_url }}"
           MANIFEST_URL="${PWA_URL%/}/manifest.webmanifest"
