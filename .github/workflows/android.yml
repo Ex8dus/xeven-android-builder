@@ -38,6 +38,11 @@ on:
       # Opcional a propósito: quien ya llama a este workflow no lo manda, y sin
       # él sale la cáscara nativa. Poner "twa" vuelve a la de antes.
       shell:        { description: "nativo | twa", required: false, default: "nativo" }
+      # EL FONDO DE LA PANTALLA DE ARRANQUE, la que pinta Android antes de que
+      # exista una línea de web. Iba en blanco a fuego, y ése era el blanco que
+      # veía el dueño al abrir su app pese a haber configurado un fondo oscuro.
+      # Llega desde la portada del proyecto; sin él se cae al color del tema.
+      splash_color: { description: "Fondo de arranque (#RRGGBB)", required: false, default: "" }
 
 jobs:
   build:
@@ -96,6 +101,13 @@ jobs:
           [ -n "$START_PATH" ] || START_PATH="/"
           echo "host=$HOST  startUrl=$START_PATH  (de $PWA_URL)"
 
+          # EL FONDO DE ARRANQUE. Iba escrito a fuego en `#ffffff`, y ése era el
+          # blanco que se veía al abrir la app aunque el dueño hubiera puesto un
+          # fondo oscuro en su portada. Ahora llega desde el proyecto.
+          FONDO="${{ github.event.inputs.splash_color }}"
+          echo "$FONDO" | grep -Eq '^#[0-9a-fA-F]{6}$' || FONDO="${{ github.event.inputs.theme_color }}"
+          echo "fondo de arranque = $FONDO"
+
           cat > twa-manifest.json <<JSON
           {
             "packageId": "${{ github.event.inputs.package_id }}",
@@ -105,7 +117,7 @@ jobs:
             "display": "standalone",
             "themeColor": "${{ github.event.inputs.theme_color }}",
             "navigationColor": "${{ github.event.inputs.theme_color }}",
-            "backgroundColor": "#ffffff",
+            "backgroundColor": "$FONDO",
             "startUrl": "$START_PATH",
             "webManifestUrl": "$MANIFEST_URL",
             "iconUrl": "${PWA_URL%/}/icon-512.png",
@@ -192,10 +204,22 @@ jobs:
           PKG: ${{ github.event.inputs.package_id }}
           APP_NAME: ${{ github.event.inputs.app_name }}
           THEME: ${{ github.event.inputs.theme_color }}
+          SPLASH_COLOR: ${{ github.event.inputs.splash_color }}
           VERSION_NAME: ${{ github.event.inputs.version_name }}
           VERSION_CODE: ${{ github.event.inputs.version_code }}
         run: |
           set -euo pipefail
+
+          # El fondo de arranque viene de la portada del proyecto. Si no hay o no
+          # es un color, se cae al del tema. Las dos capas —la nativa y la web—
+          # tienen que compartirlo o al abrir la app hay un salto de color.
+          if echo "${SPLASH_COLOR:-}" | grep -Eq '^#[0-9a-fA-F]{6}$'; then
+            FONDO="$SPLASH_COLOR"
+          else
+            FONDO="$THEME"
+          fi
+          export FONDO
+          echo "fondo de arranque = $FONDO"
           mkdir -p cascara/www cascara/assets
           cd cascara
 
@@ -238,10 +262,12 @@ jobs:
               (async () => {
                 const img = await Jimp.read("/tmp/icono.png");
                 await img.resize(1024, 1024).writeAsync("assets/icon.png");
+                // La pantalla de arranque: el color de la portada, liso. Encima
+                // de ella se pinta después la portada de verdad, que sí se anima.
                 const fondo = new Jimp(2732, 2732, Jimp.cssColorToHex(process.argv[1]));
                 await fondo.writeAsync("assets/splash.png");
               })().catch((e) => { console.log("icono:", e.message); process.exit(3); });
-            ' "$THEME"; then ICONO_OK=si; fi
+            ' "$FONDO"; then ICONO_OK=si; fi
           fi
           if [ "$ICONO_OK" = "si" ]; then
             npx --no-install capacitor-assets generate --android 2>&1 | tail -5 \
@@ -260,7 +286,9 @@ jobs:
           node -e '
             const fs = require("fs");
             const nombre = process.env.APP_NAME;
-            const tema = process.env.THEME;
+            // El color de arranque, no el del tema: es el que tiene que
+            // coincidir con la portada para que no haya salto al abrir.
+            const tema = process.env.FONDO;
             const APOSTROFO = String.fromCharCode(39);
             const esc = (s) => s
               .split("&").join("&amp;")
@@ -293,7 +321,7 @@ jobs:
             const colors = "android/app/src/main/res/values/colors.xml";
             if (fs.existsSync(colors) && /^#[0-9a-fA-F]{6}$/.test(tema || "")) {
               let c = fs.readFileSync(colors, "utf8");
-              for (const clave of ["colorPrimary", "colorPrimaryDark"]) {
+              for (const clave of ["colorPrimary", "colorPrimaryDark", "splash_background"]) {
                 c = c.replace(
                   new RegExp("(<color name=\"" + clave + "\">)[^<]*(</color>)"),
                   (_m, a, b) => a + tema + b,
