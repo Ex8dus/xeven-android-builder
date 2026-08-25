@@ -55,18 +55,21 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Sube de 22: la primera compilación nativa se baja Gradle y el plugin de
-    # Android enteros. Las siguientes van con caché.
-    timeout-minutes: 32
+    # La primera compilación se baja Gradle y el plugin de Android enteros; las
+    # siguientes van con caché. El margen alto es para el peor caso del paso de
+    # compilar: cuatro plugins de terceros, y si uno se atraganta se quita y se
+    # reintenta de uno en uno. Cinco pasadas de Gradle caben aquí.
+    timeout-minutes: 45
     permissions:
       contents: write   # lets the built-in GITHUB_TOKEN publish the release
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 17
+      # Capacitor 8 pide Java 21. Es el peaje de subir, y se paga una vez.
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
-        with: { distribution: temurin, java-version: "17" }
+        with: { distribution: temurin, java-version: "21" }
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -79,7 +82,7 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             node_modules
-          key: xeven-android-cache-v2
+          key: xeven-android-cache-v3
 
       - name: Restore signing keystore
         run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android.keystore
@@ -244,33 +247,41 @@ jobs:
           # núcleo: si uno de estos fallara, algo va mal de verdad y la
           # compilación tiene que parar.
           npm install --no-audit --no-fund --legacy-peer-deps \
-            @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/assets@3 \
-            @capacitor/share@6 @capacitor/clipboard@6 @capacitor/local-notifications@6 \
-            @capacitor/network@6 @capacitor/filesystem@6 @capacitor/camera@6 2>&1 | tail -3
+            @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8 @capacitor/assets@3 \
+            @capacitor/share@8 @capacitor/clipboard@8 @capacitor/local-notifications@8 \
+            @capacitor/network@8 @capacitor/filesystem@8 @capacitor/camera@8 2>&1 | tail -3
 
           # Y estos son de terceros: mantenidos por gente que no somos nosotros,
           # con su propio calendario de versiones. Se instalan de uno en uno y el
           # que falle se queda fuera sin llevarse la compilación por delante —
           # perder la agenda es una pena, perder la app entera es un desastre.
           #
-          # SON DOS, Y ANTES ERAN CUATRO. Había también uno de escáner de códigos
-          # y otro de dictado, y los dos sobraban: el WebView de Android SÍ trae
-          # «BarcodeDetector» y «webkitSpeechRecognition». Medido con el
-          # diagnóstico dentro de la app instalada en un Samsung S24, no
-          # supuesto. Cada plugin de más es una oportunidad de que Gradle se
-          # atragante y se lleve por delante a los que sí hacen falta — y el del
-          # escáner arrastra ML Kit entero.
+          # LOS CUATRO QUE NO TIENEN SUSTITUTO EN UN WEBVIEW. El escáner y el
+          # dictado no están porque no hacen falta: el motor SÍ trae
+          # «BarcodeDetector» y «webkitSpeechRecognition», medido con el
+          # diagnóstico desde dentro de la app en un Samsung S24. Cada plugin de
+          # más es una oportunidad de que Gradle se atragante.
           #
-          # Estos dos no tienen sustituto en un WebView: el selector de contactos
-          # del navegador existe pero no puede abrirse sin Chrome («Unable to open
-          # a contact selector», también medido), y WebAuthn directamente no está.
+          #   contacts   — el selector del navegador existe en el WebView y lanza
+          #                «Unable to open a contact selector»: es de Chrome, y
+          #                ahí no hay Chrome. Medido.
+          #   biometric  — WebAuthn directamente no está.
+          #   nfc        — «NDEFReader» está y no abre nada: leer una etiqueta
+          #                necesita que Chrome pida permiso. Se pulsaba el botón
+          #                y no pasaba nada, ni lectura ni error. Medido dos veces.
+          #   sms        — usa la API de consentimiento de Android: sale un cuadro
+          #                del sistema y la app recibe ESE mensaje y ninguno más.
+          #                SIN NINGÚN PERMISO. Pedir el de leer SMS para un código
+          #                es exactamente lo que Google rechaza en la revisión.
           #
-          # Van con versión EXACTA, la que casa con Capacitor 6. Poner «@6» a
-          # secas deja que npm elija, y el día que salga una versión para
-          # Capacitor 8 se cae la compilación de todo el mundo a la vez.
+          # Van con versión EXACTA. Poner «@8» a secas deja que npm elija, y el
+          # día que salga una para Capacitor 9 se cae la compilación de todo el
+          # mundo a la vez, sin que nadie haya tocado nada.
           ENTRARON=""
-          for P in "@capacitor-community/contacts@6.1.1" \
-                   "@capgo/capacitor-native-biometric@6.0.4"; do
+          for P in "@capacitor-community/contacts@8.0.0" \
+                   "@capgo/capacitor-native-biometric@8.6.7" \
+                   "@capgo/capacitor-nfc@8.2.5" \
+                   "@capawesome/capacitor-android-sms-retriever@0.1.1"; do
             if npm install --no-audit --no-fund --legacy-peer-deps "$P" >/tmp/npm-extra.log 2>&1; then
               ENTRARON="$ENTRARON ${P%@*}"
               echo "plugin extra OK: $P"
@@ -415,8 +426,10 @@ jobs:
           # NO están, y es a propósito:
           #   · ACCESS_BACKGROUND_LOCATION — la ubicación se pide con la app
           #     abierta. Este permiso lleva revisión aparte en Play.
-          #   · READ_SMS — el código de verificación no se lee en la app nativa;
-          #     pedir todos los SMS para eso es exactamente lo que Play rechaza.
+          #   · READ_SMS — el código de verificación llega por la API de
+          #     consentimiento de Android, que no lleva permiso: sale un cuadro
+          #     del sistema y la app recibe ESE mensaje y ninguno más. Pedir
+          #     todos los SMS para eso es exactamente lo que Play rechaza.
           #
           # READ_CONTACTS sí está, y hay que saber lo que cuesta: Play pide
           # justificarlo. Es lo que necesita el selector de contactos para leer
