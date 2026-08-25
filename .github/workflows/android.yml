@@ -257,11 +257,16 @@ jobs:
           ENTRARON=""
           for P in "@capacitor/barcode-scanner@1" "@capacitor-community/contacts@6" \
                    "@capacitor-community/speech-recognition@6" "capacitor-native-biometric@4"; do
-            if npm install --no-audit --no-fund --legacy-peer-deps "$P" >/dev/null 2>&1; then
+            if npm install --no-audit --no-fund --legacy-peer-deps "$P" >/tmp/npm-extra.log 2>&1; then
               ENTRARON="$ENTRARON ${P%@*}"
               echo "plugin extra OK: $P"
             else
-              echo "AVISO: no se pudo instalar $P — esa capacidad saldrá como «este teléfono no puede»."
+              # EL MOTIVO, NO SÓLO EL HECHO. Mandarlo a /dev/null dejaba «no se
+              # pudo instalar» sin nada detrás, y desde fuera no se distingue una
+              # versión que no existe de un registro de npm que tardó: se
+              # arreglan de maneras opuestas y sin esto se adivina.
+              echo "AVISO: no se pudo instalar $P — esa capacidad saldrá como «este teléfono no puede». Motivo:"
+              tail -12 /tmp/npm-extra.log | sed 's/^/    /'
             fi
           done
           echo "$ENTRARON" > "$GITHUB_WORKSPACE/extras.txt"
@@ -283,6 +288,22 @@ jobs:
           echo "--- capacitor.config.json ---"; cat capacitor.config.json; echo "-----------------------------"
 
           npx --no-install cap add android
+
+          # INSTALADO NO ES LO MISMO QUE REGISTRADO, y es la diferencia que
+          # importa. Esta lista la escribe Capacitor y es la que el puente le
+          # enseña luego a la web: un plugin que esté en node_modules pero no
+          # aquí no existe para la app, «hay.dictado» dirá que no y el botón ni
+          # se pintará. Se comprueba uno por uno y con nombre y apellidos —
+          # deducirlo desde un teléfono cuesta un día entero.
+          REGISTRO=android/app/src/main/assets/capacitor.plugins.json
+          echo "--- plugins nativos registrados en la app ---"
+          cat "$REGISTRO" 2>/dev/null || echo "(no se generó la lista; algo fue mal en cap add)"
+          for P in $ENTRARON; do
+            if ! grep -qF "$P" "$REGISTRO" 2>/dev/null; then
+              echo "OJO: $P se instaló pero NO quedó registrado — en el teléfono saldrá como «no se puede»."
+            fi
+          done
+          echo "---------------------------------------------"
 
           # ---- EL ICONO ----------------------------------------------------
           # Se baja el de la web publicada y se lleva a 1024, que es lo que pide
@@ -461,6 +482,18 @@ jobs:
               exit 1
             fi
           fi
+
+          # QUÉ PLUGINS LLEVA DENTRO EL APK, DE VERDAD.
+          #
+          # Lo escribe Capacitor al sincronizar y es la lista que el puente le
+          # enseña luego a la web: si un plugin no sale aquí, «hay.dictado» dirá
+          # que no y el botón no se pintará. Sin esto, una tanda de pruebas en un
+          # teléfono real no distingue «el plugin no entró» de «el plugin está y
+          # falla», que se arreglan de maneras opuestas — y se pierde un día
+          # entero averiguándolo a mano.
+          echo "--- plugins nativos dentro de la app ---"
+          cat android/app/src/main/assets/capacitor.plugins.json 2>/dev/null || echo "(no hay lista; algo fue mal en el sync)"
+          echo "----------------------------------------"
 
           cd "$GITHUB_WORKSPACE"
           APK_CRUDO=$(ls cascara/android/app/build/outputs/apk/release/*.apk | head -1)
