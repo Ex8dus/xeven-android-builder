@@ -1,6 +1,22 @@
 # Xeven Android builder — compiles a PUBLISHED Xeven PWA into an installable
-# Android app (TWA) using Bubblewrap, for FREE on GitHub Actions. Triggered by the
-# mobile-build Edge Function via workflow_dispatch; posts the APK/AAB back to Xeven.
+# Android app, for FREE on GitHub Actions. Triggered by the mobile-build Edge
+# Function via workflow_dispatch; posts the APK/AAB back to Xeven.
+#
+# HAY DOS CÁSCARAS, Y LA DIFERENCIA SE VE EN EL TELÉFONO.
+#
+#   nativo (por defecto) — un proyecto Android de verdad que lleva dentro un
+#     WebView. Los permisos están declarados en su manifiesto, así que quien los
+#     pide es LA APP: Android saca su propio diálogo, con el nombre y el icono de
+#     la app, y la respuesta queda guardada en Ajustes › Aplicaciones, donde la
+#     gente sabe buscarla.
+#
+#   twa — Bubblewrap. La web corre dentro de Chrome, que va oculto debajo. Es
+#     legítimo y Play lo acepta, pero los permisos son de CHROME y para el
+#     dominio: el diálogo dice «abogatos123.com quiere usar tu ubicación» y ofrece
+#     «Permitir mientras visito el sitio». Medido en un teléfono real. Para quien
+#     acaba de instalar una app de su despacho, eso delata el navegador de
+#     debajo. Se conserva porque hay una cosa que sólo funciona aquí: la huella
+#     y la cara (WebAuthn) necesitan Chrome, y un WebView no las tiene.
 #
 # One-time setup (see README.md). Only THREE repo secrets are needed:
 #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, MOBILE_CALLBACK_SECRET
@@ -19,11 +35,16 @@ on:
       build_id:     { description: "Correlation id for the callback", required: true }
       project_id:   { description: "Xeven project id", required: true }
       callback_url: { description: "Xeven callback endpoint", required: true }
+      # Opcional a propósito: quien ya llama a este workflow no lo manda, y sin
+      # él sale la cáscara nativa. Poner "twa" vuelve a la de antes.
+      shell:        { description: "nativo | twa", required: false, default: "nativo" }
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 22   # hard cap so a slow/stuck Gradle can't hang forever
+    # Sube de 22: la primera compilación nativa se baja Gradle y el plugin de
+    # Android enteros. Las siguientes van con caché.
+    timeout-minutes: 32
     permissions:
       contents: write   # lets the built-in GITHUB_TOKEN publish the release
     steps:
@@ -51,10 +72,25 @@ jobs:
         run: echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > android.keystore
 
       - name: Write TWA manifest
+        if: github.event.inputs.shell == 'twa'
         run: |
           PWA_URL="${{ github.event.inputs.pwa_url }}"
           MANIFEST_URL="${PWA_URL%/}/manifest.webmanifest"
 
+          # `startUrl` ES UNA RUTA, NO UNA DIRECCIÓN COMPLETA.
+          #
+          # Bubblewrap pega `host` + `startUrl` para construir lo que la app abre
+          # al arrancar. Dándole la dirección entera salía:
+          #
+          #     abogatos123.com + https://abogatos123.com/app/
+          #     → abogatos123.comhttps://abogatos123.com/app/
+          #
+          # que no es ningún dominio. La app se instalaba, se abría, y mostraba
+          # «No se puede acceder a este sitio — DNS_PROBE_FINISHED_NXDOMAIN».
+          # Compilaba bien, se firmaba bien y estaba rota desde el primer toque.
+          #
+          # Aquí se le quita el esquema y el dominio y queda sólo la ruta:
+          # `https://abogatos123.com/app/` → `/app/`, y una raíz pelada → `/`.
           HOST=$(echo "$PWA_URL" | sed -E 's#^[a-zA-Z]+://##; s#/.*$##')
           START_PATH=$(echo "$PWA_URL" | sed -E 's#^[a-zA-Z]+://[^/]+##')
           [ -n "$START_PATH" ] || START_PATH="/"
@@ -88,6 +124,12 @@ jobs:
           }
           JSON
 
+          # ¿EL ICONO SE PUEDE BAJAR DE VERDAD?
+          #
+          # Si no, `build.mjs` lo sustituye por un cuadrado liso y sigue sin
+          # quejarse, y el fallo no se ve hasta tener la app instalada en la
+          # pantalla del teléfono — donde ya no hay forma de saber por qué. Esto
+          # no cambia nada: sólo deja dicho en el registro qué icono se usó.
           ICON_URL="${PWA_URL%/}/icon-512.png"
           echo "--- icono de la app ---"
           CT=$(curl -sS -o /tmp/icono.png -w '%{content_type} %{http_code} %{size_download}' -L "$ICON_URL" || echo "sin respuesta")
@@ -98,8 +140,8 @@ jobs:
           esac
           echo "-----------------------"
 
-
       - name: Build APK + AAB
+        if: github.event.inputs.shell == 'twa'
         env:
           BUBBLEWRAP_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           BUBBLEWRAP_KEY_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -117,6 +159,238 @@ jobs:
           pkill -9 -f KotlinCompileDaemon 2>/dev/null || true
           pkill -9 java 2>/dev/null || true
           ls -la app-release-signed.apk && echo "APK OK" || (echo "NO APK — build failed/timed out"; exit 1)
+
+      # =====================================================================
+      # CÁSCARA NATIVA — el camino por defecto
+      # =====================================================================
+      #
+      # Un proyecto Android de verdad con un WebView dentro, apuntando a la web
+      # ya publicada. Eso es lo que cambia lo que se ve en el teléfono:
+      #
+      #   · Los permisos están declarados en SU manifiesto, así que quien los
+      #     pide es la app. Android saca su propio diálogo, con el nombre y el
+      #     icono de la app, y la respuesta vive en Ajustes › Aplicaciones ›
+      #     <la app> › Permisos, que es donde la gente sabe ir a cambiarla.
+      #   · No hay Chrome debajo, así que no hay «mientras visito el sitio» ni
+      #     un permiso que se comparta con lo que el dueño abrió una vez en el
+      #     navegador.
+      #
+      # APUNTA A LA WEB PUBLICADA, NO LLEVA LA WEB DENTRO. A propósito: así
+      # republicar desde Xeven actualiza la app instalada en el momento, sin
+      # recompilar ni volver a pasar por la tienda — que es como funciona todo
+      # lo demás de Xeven. Empaquetar los archivos obligaría a un APK nuevo por
+      # cada cambio de texto.
+      #
+      # LO QUE AQUÍ NO FUNCIONA, dicho antes de que alguien lo descubra solo: la
+      # huella y la cara. WebAuthn necesita Chrome, y un WebView no lo lleva.
+      # Todo lo demás —ubicación, cámara, micrófono, galería, avisos, vibración,
+      # compartir, archivos, contactos, NFC, batería, red— sí.
+      - name: App nativa — armar el proyecto Android
+        if: github.event.inputs.shell != 'twa'
+        env:
+          PWA_URL: ${{ github.event.inputs.pwa_url }}
+          PKG: ${{ github.event.inputs.package_id }}
+          APP_NAME: ${{ github.event.inputs.app_name }}
+          THEME: ${{ github.event.inputs.theme_color }}
+          VERSION_NAME: ${{ github.event.inputs.version_name }}
+          VERSION_CODE: ${{ github.event.inputs.version_code }}
+        run: |
+          set -euo pipefail
+          mkdir -p cascara/www cascara/assets
+          cd cascara
+
+          # Capacitor exige un `webDir` aunque la app viva en el servidor: es lo
+          # que empaqueta como respaldo. Nunca se ve —el WebView arranca en la
+          # URL— pero si el proyecto no lo tiene, `cap add` se planta.
+          printf '<!doctype html><meta charset="utf-8"><title>%s</title>\n' "$APP_NAME" > www/index.html
+          echo '{ "name": "xeven-cascara", "version": "1.0.0", "private": true }' > package.json
+
+          npm install --no-audit --no-fund \
+            @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/assets@3 2>&1 | tail -3
+
+          # La configuración se escribe con node y no con un heredoc: el nombre
+          # de la app lo pone una persona y puede traer comillas, acentos o una
+          # barra invertida. JSON.stringify lo escapa; un heredoc lo rompería y
+          # el error saldría 200 líneas después, en Gradle, sin decir por qué.
+          node -e '
+            const fs = require("fs");
+            const [appId, appName, url] = process.argv.slice(1);
+            fs.writeFileSync("capacitor.config.json", JSON.stringify({
+              appId, appName,
+              webDir: "www",
+              server: { url, cleartext: false, androidScheme: "https" },
+              android: { allowMixedContent: false, webContentsDebuggingEnabled: false }
+            }, null, 2));
+          ' "$PKG" "$APP_NAME" "$PWA_URL"
+          echo "--- capacitor.config.json ---"; cat capacitor.config.json; echo "-----------------------------"
+
+          npx --no-install cap add android
+
+          # ---- EL ICONO ----------------------------------------------------
+          # Se baja el de la web publicada y se lleva a 1024, que es lo que pide
+          # el generador. Si no se puede bajar, se sigue con el icono de reserva
+          # de Capacitor: quedarse sin app por un icono sería peor.
+          ICONO_OK=no
+          if curl -fsSL -o /tmp/icono.png "${PWA_URL%/}/icon-512.png" && [ -s /tmp/icono.png ]; then
+            npm install --no-audit --no-fund jimp@0.22 2>&1 | tail -1
+            if node -e '
+              const Jimp = require("jimp");
+              (async () => {
+                const img = await Jimp.read("/tmp/icono.png");
+                await img.resize(1024, 1024).writeAsync("assets/icon.png");
+                const fondo = new Jimp(2732, 2732, Jimp.cssColorToHex(process.argv[1]));
+                await fondo.writeAsync("assets/splash.png");
+              })().catch((e) => { console.log("icono:", e.message); process.exit(3); });
+            ' "$THEME"; then ICONO_OK=si; fi
+          fi
+          if [ "$ICONO_OK" = "si" ]; then
+            npx --no-install capacitor-assets generate --android 2>&1 | tail -5 \
+              || echo "AVISO: el generador de iconos falló; se usa el de reserva."
+            echo "icono: se usó ${PWA_URL%/}/icon-512.png"
+          else
+            echo "AVISO: no se pudo bajar/convertir el icono; la app sale con el de reserva."
+          fi
+
+          # ---- NOMBRE, VERSIÓN Y COLOR ------------------------------------
+          # Los valores llegan por el entorno y NO como argumentos ni dentro de
+          # un heredoc: el nombre lo escribe una persona y puede traer comillas,
+          # acentos, `&` o un apóstrofo. Cualquiera de esos rompería el XML o la
+          # propia línea de comandos, y el error saldría mucho después, en
+          # Gradle, sin decir de dónde viene.
+          node -e '
+            const fs = require("fs");
+            const nombre = process.env.APP_NAME;
+            const tema = process.env.THEME;
+            const APOSTROFO = String.fromCharCode(39);
+            const esc = (s) => s
+              .split("&").join("&amp;")
+              .split("<").join("&lt;")
+              .split(">").join("&gt;")
+              .split("\"").join("&quot;")
+              .split(APOSTROFO).join("&apos;");
+            const pon = (xml, clave, valor) =>
+              xml.replace(
+                new RegExp("(<string name=\"" + clave + "\">)[^<]*(</string>)"),
+                (_m, a, b) => a + valor + b,
+              );
+
+            const strings = "android/app/src/main/res/values/strings.xml";
+            let s = fs.readFileSync(strings, "utf8");
+            // Sólo lo que lee una persona. `package_name` y `custom_url_scheme`
+            // son identificadores del proyecto: tocarlos rompe la app.
+            s = pon(s, "app_name", esc(nombre));
+            s = pon(s, "title_activity_main", esc(nombre));
+            fs.writeFileSync(strings, s);
+
+            const gradle = "android/app/build.gradle";
+            let g = fs.readFileSync(gradle, "utf8");
+            g = g.replace(/versionCode\s+\d+/, "versionCode " + parseInt(process.env.VERSION_CODE, 10));
+            g = g.replace(/versionName\s+"[^"]*"/, "versionName \"" + process.env.VERSION_NAME + "\"");
+            fs.writeFileSync(gradle, g);
+
+            // El color mientras arranca. Sin esto el primer instante de la app
+            // es un rectángulo blanco, que es justo lo que se lee como rota.
+            const colors = "android/app/src/main/res/values/colors.xml";
+            if (fs.existsSync(colors) && /^#[0-9a-fA-F]{6}$/.test(tema || "")) {
+              let c = fs.readFileSync(colors, "utf8");
+              for (const clave of ["colorPrimary", "colorPrimaryDark"]) {
+                c = c.replace(
+                  new RegExp("(<color name=\"" + clave + "\">)[^<]*(</color>)"),
+                  (_m, a, b) => a + tema + b,
+                );
+              }
+              fs.writeFileSync(colors, c);
+            }
+          '
+
+          # ---- LOS PERMISOS ------------------------------------------------
+          #
+          # Esto es el cambio entero, resumido en un bloque de XML: un permiso
+          # que no esté declarado aquí no se puede pedir, y el diálogo de Android
+          # no aparece nunca. Se declara lo que `nova.device` sabe hacer, ni uno
+          # más: cada permiso de sobra es una pregunta que Play te hace en la
+          # revisión y una casilla que asusta a quien instala.
+          #
+          # NO están, y es a propósito:
+          #   · READ_MEDIA_IMAGES / READ_EXTERNAL_STORAGE — la galería se abre
+          #     con el selector del sistema, que no necesita permiso y no deja
+          #     ver nada más que lo elegido. Pedirlos obligaría a justificar
+          #     ante Play un acceso a TODAS las fotos que la app no usa.
+          #   · ACCESS_BACKGROUND_LOCATION — la ubicación se pide con la app
+          #     abierta. Este permiso lleva revisión aparte en Play.
+          #
+          # `uses-feature required="false"` en todo: sin eso, declarar la cámara
+          # hace que Play esconda la app en los teléfonos que no la tienen.
+          node -e '
+            const fs = require("fs");
+            const ruta = "android/app/src/main/AndroidManifest.xml";
+            let m = fs.readFileSync(ruta, "utf8");
+            const bloque = [
+              "",
+              "    <!-- Lo que la app sabe pedir (nova.device). Puestos aquí, los pide LA APP. -->",
+              "    <uses-permission android:name=\"android.permission.ACCESS_COARSE_LOCATION\" />",
+              "    <uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\" />",
+              "    <uses-permission android:name=\"android.permission.CAMERA\" />",
+              "    <uses-permission android:name=\"android.permission.RECORD_AUDIO\" />",
+              "    <uses-permission android:name=\"android.permission.MODIFY_AUDIO_SETTINGS\" />",
+              "    <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />",
+              "    <uses-permission android:name=\"android.permission.VIBRATE\" />",
+              "    <uses-permission android:name=\"android.permission.NFC\" />",
+              "",
+              "    <uses-feature android:name=\"android.hardware.camera\" android:required=\"false\" />",
+              "    <uses-feature android:name=\"android.hardware.camera.autofocus\" android:required=\"false\" />",
+              "    <uses-feature android:name=\"android.hardware.location.gps\" android:required=\"false\" />",
+              "    <uses-feature android:name=\"android.hardware.microphone\" android:required=\"false\" />",
+              "    <uses-feature android:name=\"android.hardware.nfc\" android:required=\"false\" />",
+              "",
+            ].join("\n");
+
+            if (m.includes("ACCESS_FINE_LOCATION")) {
+              console.log("los permisos ya estaban; no se toca");
+            } else {
+              // Justo antes de </manifest>: es el único sitio que existe seguro
+              // en cualquier versión de la plantilla de Capacitor.
+              m = m.replace("</manifest>", bloque + "</manifest>");
+              fs.writeFileSync(ruta, m);
+            }
+          '
+          echo "--- permisos escritos en el manifiesto ---"
+          grep -o "android.permission.[A-Z_]*" android/app/src/main/AndroidManifest.xml | sort -u
+          echo "------------------------------------------"
+
+      - name: App nativa — compilar y firmar
+        if: github.event.inputs.shell != 'twa'
+        env:
+          CLAVE: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          cd cascara/android
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease bundleRelease
+
+          cd "$GITHUB_WORKSPACE"
+          APK_CRUDO=$(ls cascara/android/app/build/outputs/apk/release/*.apk | head -1)
+          AAB_CRUDO=$(ls cascara/android/app/build/outputs/bundle/release/*.aab | head -1)
+          echo "sin firmar: $APK_CRUDO / $AAB_CRUDO"
+
+          # Se firma DESPUÉS de compilar en vez de meter la contraseña en el
+          # build.gradle: así la clave no acaba escrita en un archivo que se
+          # queda en el disco del runner ni en la caché de Gradle.
+          BT=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          "$BT/zipalign" -p -f 4 "$APK_CRUDO" alineado.apk
+          "$BT/apksigner" sign \
+            --ks android.keystore --ks-key-alias xeven \
+            --ks-pass "pass:$CLAVE" --key-pass "pass:$CLAVE" \
+            --out app-release-signed.apk alineado.apk
+          "$BT/apksigner" verify --print-certs app-release-signed.apk | head -5
+
+          # El AAB no lo firma apksigner (no es un APK): va con jarsigner.
+          cp "$AAB_CRUDO" app-release-bundle.aab
+          jarsigner -keystore android.keystore \
+            -storepass "$CLAVE" -keypass "$CLAVE" \
+            -sigalg SHA256withRSA -digestalg SHA-256 \
+            app-release-bundle.aab xeven >/dev/null
+          ls -la app-release-signed.apk app-release-bundle.aab
 
       # QUE EL APK DIGA QUÉ PERMISOS LLEVA, en vez de deducirlo.
       #
@@ -165,7 +439,24 @@ jobs:
           files: |
             app-release-signed.apk
             app-release-bundle.aab
-            
+
+      # LA HUELLA DE LA LLAVE CON LA QUE ACABAMOS DE FIRMAR.
+      #
+      # Android quita la barra del navegador sólo si el dominio confirma qué app
+      # tiene permiso, y esa confirmación lleva la huella del certificado. Hasta
+      # ahora se le pedía al dueño que la copiara de Google Play — correcto para
+      # la app que se instala DESDE la tienda, porque Google la vuelve a firmar
+      # con su llave.
+      #
+      # Pero el APK que se descarga directo de Xeven no pasa por Google: lo firma
+      # esta llave, aquí, ahora. Su huella la sabemos en este mismo instante, y
+      # estábamos mandando a la gente a hacer un trámite en Play para un archivo
+      # que nunca iba a pasar por Play. Resultado: durante toda la fase de
+      # pruebas —que es cuando más se instala— la app abría con la barra encima
+      # y no había forma de quitarla.
+      #
+      # `keytool` la imprime ya en el formato que pide `assetlinks.json`:
+      # 32 pares hexadecimales en mayúsculas separados por dos puntos.
       - name: Huella de la llave de firma
         id: huella
         continue-on-error: true
