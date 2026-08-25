@@ -15,8 +15,16 @@
 #     dominio: el diálogo dice «abogatos123.com quiere usar tu ubicación» y ofrece
 #     «Permitir mientras visito el sitio». Medido en un teléfono real. Para quien
 #     acaba de instalar una app de su despacho, eso delata el navegador de
-#     debajo. Se conserva porque hay una cosa que sólo funciona aquí: la huella
-#     y la cara (WebAuthn) necesitan Chrome, y un WebView no las tiene.
+#     debajo. Se conserva porque quedan dos cosas que sólo funcionan aquí: leer
+#     etiquetas NFC y recoger el código de verificación del SMS. Las dos son
+#     APIs de Chrome, no del motor, y no hay plugin libre que las reponga.
+#
+# LA APP NATIVA LLEVA PLUGINS, y no es un adorno. Un WebView es el motor de
+# Chrome SIN Chrome: le faltan compartir, portapapeles, avisos, escáner, dictado,
+# agenda, huella y guardar archivo. Medido con la app puesta en un Samsung S24:
+# esos botones no fallaban, no hacían NADA. Cada plugin de abajo repone uno, y
+# `nova.device` los llama solo. Lo que no se pueda instalar sale como «este
+# teléfono no puede», que se ve antes de pintar el botón.
 #
 # One-time setup (see README.md). Only THREE repo secrets are needed:
 #   ANDROID_KEYSTORE_BASE64, ANDROID_KEYSTORE_PASSWORD, MOBILE_CALLBACK_SECRET
@@ -229,8 +237,34 @@ jobs:
           printf '<!doctype html><meta charset="utf-8"><title>%s</title>\n' "$APP_NAME" > www/index.html
           echo '{ "name": "xeven-cascara", "version": "1.0.0", "private": true }' > package.json
 
-          npm install --no-audit --no-fund \
-            @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/assets@3 2>&1 | tail -3
+          # LOS PLUGINS SON LO QUE SEPARA UNA APP MUDA DE UNA APP.
+          #
+          # Van en DOS grupos, y la diferencia importa. Los de abajo son los
+          # oficiales de Capacitor, con una versión 6 publicada que casa con el
+          # núcleo: si uno de estos fallara, algo va mal de verdad y la
+          # compilación tiene que parar.
+          npm install --no-audit --no-fund --legacy-peer-deps \
+            @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/assets@3 \
+            @capacitor/share@6 @capacitor/clipboard@6 @capacitor/local-notifications@6 \
+            @capacitor/network@6 @capacitor/filesystem@6 @capacitor/camera@6 2>&1 | tail -3
+
+          # Y estos son de terceros: mantenidos por gente que no somos nosotros,
+          # con su propio calendario de versiones. Se instalan de uno en uno y el
+          # que falle se queda fuera sin llevarse la compilación por delante —
+          # perder el dictado es una pena, perder la app entera es un desastre.
+          # Se apuntan los que entraron: si Gradle luego se atraganta con alguno,
+          # el paso siguiente los quita todos y vuelve a compilar.
+          ENTRARON=""
+          for P in "@capacitor/barcode-scanner@1" "@capacitor-community/contacts@6" \
+                   "@capacitor-community/speech-recognition@6" "capacitor-native-biometric@4"; do
+            if npm install --no-audit --no-fund --legacy-peer-deps "$P" >/dev/null 2>&1; then
+              ENTRARON="$ENTRARON ${P%@*}"
+              echo "plugin extra OK: $P"
+            else
+              echo "AVISO: no se pudo instalar $P — esa capacidad saldrá como «este teléfono no puede»."
+            fi
+          done
+          echo "$ENTRARON" > "$GITHUB_WORKSPACE/extras.txt"
 
           # La configuración se escribe con node y no con un heredoc: el nombre
           # de la app lo pone una persona y puede traer comillas, acentos o una
@@ -339,13 +373,19 @@ jobs:
           # más: cada permiso de sobra es una pregunta que Play te hace en la
           # revisión y una casilla que asusta a quien instala.
           #
+          # Los plugins traen los suyos en su propio manifiesto y Gradle los
+          # junta con éste: el de la cámara añade el de fotos, el de avisos el de
+          # las alarmas. Aquí van sólo los que nadie declara por nosotros.
+          #
           # NO están, y es a propósito:
-          #   · READ_MEDIA_IMAGES / READ_EXTERNAL_STORAGE — la galería se abre
-          #     con el selector del sistema, que no necesita permiso y no deja
-          #     ver nada más que lo elegido. Pedirlos obligaría a justificar
-          #     ante Play un acceso a TODAS las fotos que la app no usa.
           #   · ACCESS_BACKGROUND_LOCATION — la ubicación se pide con la app
           #     abierta. Este permiso lleva revisión aparte en Play.
+          #   · READ_SMS — el código de verificación no se lee en la app nativa;
+          #     pedir todos los SMS para eso es exactamente lo que Play rechaza.
+          #
+          # READ_CONTACTS sí está, y hay que saber lo que cuesta: Play pide
+          # justificarlo. Es lo que necesita el selector de contactos para leer
+          # el teléfono del que la persona ELIGE — no la agenda entera.
           #
           # `uses-feature required="false"` en todo: sin eso, declarar la cámara
           # hace que Play esconda la app en los teléfonos que no la tienen.
@@ -364,12 +404,17 @@ jobs:
               "    <uses-permission android:name=\"android.permission.POST_NOTIFICATIONS\" />",
               "    <uses-permission android:name=\"android.permission.VIBRATE\" />",
               "    <uses-permission android:name=\"android.permission.NFC\" />",
+              "    <uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\" />",
+              "    <uses-permission android:name=\"android.permission.READ_CONTACTS\" />",
+              "    <uses-permission android:name=\"android.permission.USE_BIOMETRIC\" />",
+              "    <uses-permission android:name=\"android.permission.USE_FINGERPRINT\" android:maxSdkVersion=\"28\" />",
               "",
               "    <uses-feature android:name=\"android.hardware.camera\" android:required=\"false\" />",
               "    <uses-feature android:name=\"android.hardware.camera.autofocus\" android:required=\"false\" />",
               "    <uses-feature android:name=\"android.hardware.location.gps\" android:required=\"false\" />",
               "    <uses-feature android:name=\"android.hardware.microphone\" android:required=\"false\" />",
               "    <uses-feature android:name=\"android.hardware.nfc\" android:required=\"false\" />",
+              "    <uses-feature android:name=\"android.hardware.fingerprint\" android:required=\"false\" />",
               "",
             ].join("\n");
 
@@ -392,9 +437,30 @@ jobs:
           CLAVE: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
         run: |
           set -euo pipefail
-          cd cascara/android
-          chmod +x gradlew
-          ./gradlew --no-daemon assembleRelease bundleRelease
+          cd "$GITHUB_WORKSPACE/cascara"
+          chmod +x android/gradlew
+
+          compila() { ( cd android && ./gradlew --no-daemon assembleRelease bundleRelease ); }
+
+          # SI GRADLE SE ATRAGANTA CON UN PLUGIN DE TERCEROS, se quitan todos y
+          # se vuelve a compilar. Es la misma regla de siempre: una app con menos
+          # cosas es mejor que ninguna app. Y el fallo no se esconde — queda
+          # escrito aquí arriba, con el nombre de los que se cayeron.
+          if ! compila; then
+            EXTRAS=$(cat "$GITHUB_WORKSPACE/extras.txt" 2>/dev/null || echo "")
+            if [ -n "$(echo $EXTRAS | tr -d ' ')" ]; then
+              echo "==================================================================="
+              echo "Gradle falló con los plugins de terceros. Se quitan y se reintenta."
+              echo "Quedan fuera:$EXTRAS"
+              echo "La app sale igual, sin escáner de códigos, dictado, agenda ni huella."
+              echo "==================================================================="
+              npm remove $EXTRAS >/dev/null 2>&1 || true
+              npx --no-install cap sync android 2>&1 | tail -5
+              compila
+            else
+              exit 1
+            fi
+          fi
 
           cd "$GITHUB_WORKSPACE"
           APK_CRUDO=$(ls cascara/android/app/build/outputs/apk/release/*.apk | head -1)
