@@ -251,12 +251,26 @@ jobs:
           # Y estos son de terceros: mantenidos por gente que no somos nosotros,
           # con su propio calendario de versiones. Se instalan de uno en uno y el
           # que falle se queda fuera sin llevarse la compilación por delante —
-          # perder el dictado es una pena, perder la app entera es un desastre.
-          # Se apuntan los que entraron: si Gradle luego se atraganta con alguno,
-          # el paso siguiente los quita todos y vuelve a compilar.
+          # perder la agenda es una pena, perder la app entera es un desastre.
+          #
+          # SON DOS, Y ANTES ERAN CUATRO. Había también uno de escáner de códigos
+          # y otro de dictado, y los dos sobraban: el WebView de Android SÍ trae
+          # «BarcodeDetector» y «webkitSpeechRecognition». Medido con el
+          # diagnóstico dentro de la app instalada en un Samsung S24, no
+          # supuesto. Cada plugin de más es una oportunidad de que Gradle se
+          # atragante y se lleve por delante a los que sí hacen falta — y el del
+          # escáner arrastra ML Kit entero.
+          #
+          # Estos dos no tienen sustituto en un WebView: el selector de contactos
+          # del navegador existe pero no puede abrirse sin Chrome («Unable to open
+          # a contact selector», también medido), y WebAuthn directamente no está.
+          #
+          # Van con versión EXACTA, la que casa con Capacitor 6. Poner «@6» a
+          # secas deja que npm elija, y el día que salga una versión para
+          # Capacitor 8 se cae la compilación de todo el mundo a la vez.
           ENTRARON=""
-          for P in "@capacitor/barcode-scanner@1" "@capacitor-community/contacts@6" \
-                   "@capacitor-community/speech-recognition@6" "capacitor-native-biometric@4"; do
+          for P in "@capacitor-community/contacts@6.1.1" \
+                   "@capgo/capacitor-native-biometric@6.0.4"; do
             if npm install --no-audit --no-fund --legacy-peer-deps "$P" >/tmp/npm-extra.log 2>&1; then
               ENTRARON="$ENTRARON ${P%@*}"
               echo "plugin extra OK: $P"
@@ -463,24 +477,31 @@ jobs:
 
           compila() { ( cd android && ./gradlew --no-daemon assembleRelease bundleRelease ); }
 
-          # SI GRADLE SE ATRAGANTA CON UN PLUGIN DE TERCEROS, se quitan todos y
-          # se vuelve a compilar. Es la misma regla de siempre: una app con menos
-          # cosas es mejor que ninguna app. Y el fallo no se esconde — queda
-          # escrito aquí arriba, con el nombre de los que se cayeron.
+          # SI GRADLE SE ATRAGANTA CON UN PLUGIN DE TERCEROS, se quita UNO y se
+          # vuelve a compilar; si sigue fallando, se quita el siguiente.
+          #
+          # Antes se quitaban todos de golpe, y eso castigaba al inocente: basta
+          # que uno de los dos no case con esta versión de Android para quedarse
+          # también sin el otro. Son dos, así que el peor caso son tres
+          # compilaciones y entran de sobra en el tiempo del trabajo.
+          #
+          # La regla de siempre: una app con menos cosas es mejor que ninguna
+          # app. Y el fallo no se esconde — queda escrito aquí, con nombre.
           if ! compila; then
-            EXTRAS=$(cat "$GITHUB_WORKSPACE/extras.txt" 2>/dev/null || echo "")
-            if [ -n "$(echo $EXTRAS | tr -d ' ')" ]; then
+            QUEDAN=$(cat "$GITHUB_WORKSPACE/extras.txt" 2>/dev/null || echo "")
+            while [ -n "$(echo $QUEDAN | tr -d ' ')" ]; do
+              ULTIMO=$(echo $QUEDAN | awk '{print $NF}')
               echo "==================================================================="
-              echo "Gradle falló con los plugins de terceros. Se quitan y se reintenta."
-              echo "Quedan fuera:$EXTRAS"
-              echo "La app sale igual, sin escáner de códigos, dictado, agenda ni huella."
+              echo "Gradle falló. Se quita $ULTIMO y se reintenta sin él."
               echo "==================================================================="
-              npm remove $EXTRAS >/dev/null 2>&1 || true
+              npm remove "$ULTIMO" >/dev/null 2>&1 || true
+              QUEDAN=$(echo "$QUEDAN" | sed "s#$ULTIMO##")
               npx --no-install cap sync android 2>&1 | tail -5
-              compila
-            else
-              exit 1
-            fi
+              if compila; then break; fi
+            done
+            # Si tras quitarlos todos sigue sin compilar, el problema no eran ellos.
+            ls android/app/build/outputs/apk/release/*.apk >/dev/null 2>&1 || exit 1
+            echo "La app sale con lo que quedó:$QUEDAN"
           fi
 
           # QUÉ PLUGINS LLEVA DENTRO EL APK, DE VERDAD.
