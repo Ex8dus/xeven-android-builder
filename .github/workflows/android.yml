@@ -51,6 +51,17 @@ on:
       # veía el dueño al abrir su app pese a haber configurado un fondo oscuro.
       # Llega desde la portada del proyecto; sin él se cae al color del tema.
       splash_color: { description: "Fondo de arranque (#RRGGBB)", required: false, default: "" }
+      # LOS PERMISOS DE MÁS QUE USA *ESTA* APP, separados por comas.
+      #
+      # Vacío es lo normal. Hasta ahora el manifiesto era el mismo para todas las
+      # apps, y eso deja de valer en cuanto entra uno de los caros: declarar
+      # ACCESS_BACKGROUND_LOCATION obliga a grabar un VÍDEO para Google a
+      # CUALQUIER app que lo lleve, lo use o no. Sin esto, meter uno solo
+      # castigaría a todos los clientes por lo que usa uno.
+      #
+      # Lo calcula Xeven mirando el código de la app, no una casilla que alguien
+      # tenga que acordarse de marcar.
+      extras:       { description: "calendario,bluetooth,ubicacionSiempre,salud", required: false, default: "" }
 
 jobs:
   build:
@@ -216,6 +227,7 @@ jobs:
           APP_NAME: ${{ github.event.inputs.app_name }}
           THEME: ${{ github.event.inputs.theme_color }}
           SPLASH_COLOR: ${{ github.event.inputs.splash_color }}
+          EXTRAS: ${{ github.event.inputs.extras }}
           VERSION_NAME: ${{ github.event.inputs.version_name }}
           VERSION_CODE: ${{ github.event.inputs.version_code }}
         run: |
@@ -293,11 +305,30 @@ jobs:
           # Van con versión EXACTA. Poner «@8» a secas deja que npm elija, y el
           # día que salga una para Capacitor 9 se cae la compilación de todo el
           # mundo a la vez, sin que nadie haya tocado nada.
+          # Y ÉSTOS SÓLO SI LA APP LOS USA. La regla es la misma de siempre —no
+          # pedir lo que no se usa— pero aquí se decide por proyecto y no de una
+          # vez para todos: el calendario sale listado en la ficha de la tienda, y
+          # una pastelería que sólo quiere pedidos no debería aparecer pidiendo el
+          # calendario de nadie.
+          SOLO_SI=""
+          case ",${EXTRAS:-}," in *,calendario,*) SOLO_SI="$SOLO_SI @ebarooni/capacitor-calendar@8.3.0" ;; esac
+          # EL BLUETOOTH ES EL ÚNICO SIN VÍA DEL NAVEGADOR de todo el archivo.
+          # Web Bluetooth no existe en un WebView, así que si este plugin no
+          # entra la capacidad no existe: no hay a qué caerse.
+          case ",${EXTRAS:-}," in *,bluetooth,*) SOLO_SI="$SOLO_SI @capacitor-community/bluetooth-le@8.3.0" ;; esac
+          # LA UBICACIÓN CON LA APP EN EL FONDO. Trae en su propio manifiesto el
+          # servicio en primer plano y sus permisos —FOREGROUND_SERVICE y
+          # FOREGROUND_SERVICE_LOCATION—, que es EXACTAMENTE lo que evita tener
+          # que pedir ACCESS_BACKGROUND_LOCATION. Ver el bloque del manifiesto.
+          case ",${EXTRAS:-}," in *,ubicacionSiempre,*) SOLO_SI="$SOLO_SI @capacitor-community/background-geolocation@1.2.26" ;; esac
+          [ -n "$SOLO_SI" ] && echo "extras de este proyecto:$SOLO_SI" || echo "este proyecto no pide permisos de mas"
+
           ENTRARON=""
           for P in "@capacitor-community/contacts@8.0.0" \
                    "@capgo/capacitor-native-biometric@8.6.7" \
                    "@capgo/capacitor-nfc@8.2.5" \
-                   "@capawesome/capacitor-android-sms-retriever@0.1.1"; do
+                   "@capawesome/capacitor-android-sms-retriever@0.1.1" \
+                   $SOLO_SI; do
             if npm install --no-audit --no-fund --legacy-peer-deps "$P" >/tmp/npm-extra.log 2>&1; then
               ENTRARON="$ENTRARON ${P%@*}"
               echo "plugin extra OK: $P"
@@ -319,11 +350,33 @@ jobs:
           node -e '
             const fs = require("fs");
             const [appId, appName, url] = process.argv.slice(1);
+            const android = { allowMixedContent: false, webContentsDebuggingEnabled: false };
+
+            // EL PUENTE VIEJO, Y SÓLO PARA ESTAS APPS.
+            //
+            // El puente moderno manda los avisos de lo nativo a la web por
+            // «addWebMessageListener», y Android lo congela a los cinco minutos
+            // de tener la app en el fondo. Para casi todo da igual —nadie espera
+            // un aviso con la app cerrada— pero para una ruta de reparto es el
+            // fallo entero: el servicio sigue vivo, el GPS sigue midiendo, y las
+            // posiciones dejan de llegar a la pantalla sin un solo error.
+            //
+            // El viejo usa «addJavascriptInterface», que no se congela. Es el
+            // camino de siempre de Capacitor y sigue soportado; lo único que
+            // pierde es una capa de aislamiento que sólo importa cuando la web
+            // que carga el WebView no es tuya. La nuestra lo es.
+            //
+            // No se pone para todos: cambiar el puente de TODAS las apps por lo
+            // que necesita una es justo lo que este mecanismo existe para evitar.
+            if (String(process.env.EXTRAS || "").split(",").map((x) => x.trim()).includes("ubicacionSiempre")) {
+              android.useLegacyBridge = true;
+            }
+
             fs.writeFileSync("capacitor.config.json", JSON.stringify({
               appId, appName,
               webDir: "www",
               server: { url, cleartext: false, androidScheme: "https" },
-              android: { allowMixedContent: false, webContentsDebuggingEnabled: false }
+              android
             }, null, 2));
           ' "$PKG" "$APP_NAME" "$PWA_URL"
           echo "--- capacitor.config.json ---"; cat capacitor.config.json; echo "-----------------------------"
@@ -404,6 +457,19 @@ jobs:
             // son identificadores del proyecto: tocarlos rompe la app.
             s = pon(s, "app_name", esc(nombre));
             s = pon(s, "title_activity_main", esc(nombre));
+
+            // EL AVISO PERMANENTE DE LA RUTA. El plugin de la ubicación en el
+            // fondo saca un aviso que no se puede quitar, y al mantenerlo
+            // pulsado se ve el nombre del canal. Por defecto pone «Background
+            // Tracking», en inglés, en la barra de alguien que reparte pan.
+            const pideFondo = String(process.env.EXTRAS || "")
+              .split(",").map((x) => x.trim()).includes("ubicacionSiempre");
+            if (pideFondo && !s.includes("capacitor_background_geolocation_notification_channel_name")) {
+              s = s.replace(
+                "</resources>",
+                "    <string name=\"capacitor_background_geolocation_notification_channel_name\">Ubicación en curso</string>\n</resources>",
+              );
+            }
             fs.writeFileSync(strings, s);
 
             const gradle = "android/app/build.gradle";
@@ -467,6 +533,59 @@ jobs:
             const fs = require("fs");
             const ruta = "android/app/src/main/AndroidManifest.xml";
             let m = fs.readFileSync(ruta, "utf8");
+
+            // LOS DE ESTE PROYECTO Y NO LOS DE TODOS. Lo que no esté en la lista
+            // que mandó Xeven no se declara, y lo que no se declara no sale en la
+            // ficha de la tienda ni obliga a justificar nada.
+            const pide = String(process.env.EXTRAS || "").split(",").map((x) => x.trim());
+            const deMas = [];
+            if (pide.includes("bluetooth")) {
+              deMas.push(
+                "",
+                "    <!-- El Bluetooth no lleva ni una linea aqui, y esta bien asi: BLUETOOTH_SCAN,",
+                "         BLUETOOTH_CONNECT y los dos antiguos de Android 11 y anteriores los declara",
+                "         el plugin en su propio manifiesto, y Gradle los junta con este. Repetirlos",
+                "         no anadiria nada y si una forma nueva de equivocarse. -->",
+              );
+            }
+            if (pide.includes("ubicacionSiempre")) {
+              deMas.push(
+                "",
+                "    <!-- LA RUTA EN EL FONDO NO DECLARA ACCESS_BACKGROUND_LOCATION, Y ES A PROPOSITO.",
+                "         Ese permiso obliga a grabarle un VIDEO a Google justificando el uso, a",
+                "         cualquier app que lo lleve. Aqui no hace falta: el plugin levanta un SERVICIO",
+                "         EN PRIMER PLANO, con su aviso permanente en la barra, y mientras ese servicio",
+                "         corre Android considera que la app esta EN USO y le da la ubicacion con el",
+                "         permiso normal de siempre. El servicio, FOREGROUND_SERVICE y",
+                "         FOREGROUND_SERVICE_LOCATION vienen en el manifiesto del plugin.",
+                "         Lo que se pierde a cambio: si la persona cierra la app deslizandola de",
+                "         recientes, el seguimiento para. Ese es el trato, y compensa. -->",
+              );
+            }
+            if (pide.includes("calendario")) {
+              deMas.push(
+                "",
+                "    <!-- El calendario, porque esta app lo usa. En las que no lo usan no aparece. -->",
+                "    <uses-permission android:name=\"android.permission.READ_CALENDAR\" />",
+                "    <uses-permission android:name=\"android.permission.WRITE_CALENDAR\" />",
+              );
+            }
+
+            // LA GPS, Y POR QUE LLEVA UN tools:replace CUANDO HAY RUTA EN EL FONDO.
+            //
+            // En casi todo el manifiesto gana el de la app cuando choca con el de
+            // un plugin. En <uses-feature> no: android:required se junta con un O
+            // logico, asi que basta con que UN plugin la pida obligatoria para que
+            // lo sea. El plugin de la ubicacion en el fondo la declara sin el
+            // required="false", y sin esta linea Play esconderia la app en todo lo
+            // que no lleve GPS.
+            //
+            // No es teorico y no avisa nadie: la app compila, se sube, y
+            // simplemente no le aparece a una parte de la gente.
+            const gps = pide.includes("ubicacionSiempre")
+              ? "    <uses-feature android:name=\"android.hardware.location.gps\" android:required=\"false\" tools:replace=\"android:required\" />"
+              : "    <uses-feature android:name=\"android.hardware.location.gps\" android:required=\"false\" />";
+
             const bloque = [
               "",
               "    <!-- Lo que la app sabe pedir (nova.device). Puestos aquí, los pide LA APP. -->",
@@ -490,12 +609,12 @@ jobs:
               "",
               "    <uses-feature android:name=\"android.hardware.camera\" android:required=\"false\" />",
               "    <uses-feature android:name=\"android.hardware.camera.autofocus\" android:required=\"false\" />",
-              "    <uses-feature android:name=\"android.hardware.location.gps\" android:required=\"false\" />",
+              gps,
               "    <uses-feature android:name=\"android.hardware.microphone\" android:required=\"false\" />",
               "    <uses-feature android:name=\"android.hardware.nfc\" android:required=\"false\" />",
               "    <uses-feature android:name=\"android.hardware.fingerprint\" android:required=\"false\" />",
               "",
-            ].join("\n");
+            ].concat(deMas).join("\n");
 
             // A QUÉ OTRAS APPS SE LE PUEDE PREGUNTAR.
             //
@@ -521,6 +640,16 @@ jobs:
             if (m.includes("ACCESS_FINE_LOCATION")) {
               console.log("los permisos ya estaban; no se toca");
             } else {
+              // tools:replace no se entiende sin declarar de donde sale, y la
+              // plantilla de Capacitor no lo trae. Se anade solo cuando se usa:
+              // un espacio de nombres de mas es inofensivo, pero tocar el
+              // manifiesto de todas las apps por lo que necesita una no lo es.
+              if (bloque.includes("tools:replace") && !m.includes("xmlns:tools")) {
+                m = m.replace(
+                  "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"",
+                  "<manifest xmlns:android=\"http://schemas.android.com/apk/res/android\"\n    xmlns:tools=\"http://schemas.android.com/tools\"",
+                );
+              }
               // Justo antes de </manifest>: es el único sitio que existe seguro
               // en cualquier versión de la plantilla de Capacitor.
               m = m.replace("</manifest>", bloque + "</manifest>");
