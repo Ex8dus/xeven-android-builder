@@ -246,10 +246,26 @@ jobs:
           # oficiales de Capacitor, con una versión 6 publicada que casa con el
           # núcleo: si uno de estos fallara, algo va mal de verdad y la
           # compilación tiene que parar.
+          # LOS SEIS DE ABAJO NO PIDEN NINGÚN PERMISO, y son los que más se
+          # notan. Una web metida en una app se delata por cosas pequeñas: el
+          # botón físico de atrás la cierra de golpe, el teclado tapa el campo
+          # donde escribes, nada responde al tacto, la barra de arriba es de otro
+          # color. Cada una parece un detalle; juntas son la diferencia entre
+          # «esto es una app» y «esto es una página a pantalla completa».
+          #
+          #   app              — el botón de atrás, y saber si la app volvió del fondo
+          #   keyboard         — el teclado: cuánto ocupa, para subir el campo
+          #   haptics          — el tic corto al pulsar (no es vibrar)
+          #   status-bar       — el color de la barra del reloj
+          #   screen-orientation — que no gire si la app es vertical
+          #   app-launcher     — abrir WhatsApp, el marcador o los mapas de verdad
           npm install --no-audit --no-fund --legacy-peer-deps \
             @capacitor/core@8 @capacitor/cli@8 @capacitor/android@8 @capacitor/assets@3 \
             @capacitor/share@8 @capacitor/clipboard@8 @capacitor/local-notifications@8 \
-            @capacitor/network@8 @capacitor/filesystem@8 @capacitor/camera@8 2>&1 | tail -3
+            @capacitor/network@8 @capacitor/filesystem@8 @capacitor/camera@8 \
+            @capacitor/app@8.1.1 @capacitor/keyboard@8.0.5 @capacitor/haptics@8.0.2 \
+            @capacitor/status-bar@8.0.3 @capacitor/screen-orientation@8.0.1 \
+            @capacitor/app-launcher@8.0.1 2>&1 | tail -3
 
           # Y estos son de terceros: mantenidos por gente que no somos nosotros,
           # con su propio calendario de versiones. Se instalan de uno en uno y el
@@ -465,6 +481,27 @@ jobs:
               "    <uses-feature android:name=\"android.hardware.fingerprint\" android:required=\"false\" />",
               "",
             ].join("\n");
+
+            // A QUÉ OTRAS APPS SE LE PUEDE PREGUNTAR.
+            //
+            // Desde Android 11 una app no ve qué más hay instalado salvo que lo
+            // declare. Sin esto, «¿está WhatsApp?» contesta que no aunque esté,
+            // y un botón que se esconde solo es de los fallos más difíciles de
+            // entender. Se declaran FORMAS de abrir —llamar, escribir, mapas—,
+            // no apps concretas: así vale para cualquier marca y no hace falta
+            // QUERY_ALL_PACKAGES, que Play trata como permiso peligroso.
+            var consultas = [
+              "",
+              "    <queries>",
+              "        <intent><action android:name=\"android.intent.action.VIEW\" /><data android:scheme=\"https\" /></intent>",
+              "        <intent><action android:name=\"android.intent.action.DIAL\" /><data android:scheme=\"tel\" /></intent>",
+              "        <intent><action android:name=\"android.intent.action.SENDTO\" /><data android:scheme=\"mailto\" /></intent>",
+              "        <intent><action android:name=\"android.intent.action.SENDTO\" /><data android:scheme=\"smsto\" /></intent>",
+              "        <intent><action android:name=\"android.intent.action.VIEW\" /><data android:scheme=\"geo\" /></intent>",
+              "    </queries>",
+              "",
+            ].join("\n");
+            if (!m.includes("<queries>")) m = m.replace("</manifest>", consultas + "</manifest>");
 
             if (m.includes("ACCESS_FINE_LOCATION")) {
               console.log("los permisos ya estaban; no se toca");
